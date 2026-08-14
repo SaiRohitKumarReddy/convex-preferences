@@ -18,7 +18,7 @@ from google.oauth2.service_account import Credentials
 
 st.set_page_config(
     page_title="Convex Preferences — MBA Class",
-    page_icon="🟠",
+    #page_icon="🟠",
     layout="wide",
 )
 
