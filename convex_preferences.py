@@ -1706,7 +1706,7 @@ with results_tab:
         # ====================================================
 
         st.subheader(
-            "Class Preference Results"
+            "Total Responses"
         )
 
         st.metric(
