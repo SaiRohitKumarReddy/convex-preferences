@@ -3,7 +3,7 @@ from __future__ import annotations
 import hmac
 import json
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import altair as alt
 import gspread
@@ -37,9 +37,19 @@ GOOGLE_WORKSHEET = str(
 
 CSV_COLUMNS = [
     "submitted_at",
-    "student_id",
-    "selected_bundle",
+    "student_name",
+    "rank_1",
+    "rank_2",
+    "rank_3",
 ]
+
+IST = timezone(
+    timedelta(
+        hours=5,
+        minutes=30,
+    ),
+    name="IST",
+)
 
 
 # ============================================================
@@ -51,28 +61,6 @@ BUNDLES = {
     "Bundle Y": "0 Samosas  ·  10 Coffees",
     "Bundle Z": "5 Samosas  ·  5 Coffees",
 }
-
-
-# Coordinates used for the convex graph
-BUNDLE_POINTS = pd.DataFrame(
-    {
-        "Bundle": [
-            "Bundle Y",
-            "Bundle Z",
-            "Bundle X",
-        ],
-        "Samosas": [
-            0,
-            5,
-            10,
-        ],
-        "Coffees": [
-            10,
-            5,
-            0,
-        ],
-    }
-)
 
 
 # ============================================================
@@ -184,6 +172,9 @@ def csv_lock() -> threading.Lock:
 def initialize_worksheet() -> None:
     """
     Make sure the worksheet has the expected header row.
+
+    The active schema is:
+        submitted_at | student_name | rank_1 | rank_2 | rank_3
     """
 
     worksheet = google_worksheet()
@@ -193,6 +184,13 @@ def initialize_worksheet() -> None:
     if not first_row:
         worksheet.append_row(
             CSV_COLUMNS,
+            value_input_option="RAW",
+        )
+
+    elif first_row != CSV_COLUMNS:
+        worksheet.update(
+            range_name="A1:E1",
+            values=[CSV_COLUMNS],
             value_input_option="RAW",
         )
 
@@ -222,7 +220,17 @@ def load_responses() -> pd.DataFrame:
 
     headers = values[0]
 
-    rows = values[1:]
+    rows = []
+
+    for row in values[1:]:
+        normalized_row = (
+            row
+            + [""] * len(CSV_COLUMNS)
+        )[:len(CSV_COLUMNS)]
+
+        rows.append(
+            normalized_row
+        )
 
     responses = pd.DataFrame(
         rows,
@@ -243,55 +251,39 @@ def load_responses() -> pd.DataFrame:
 # ============================================================
 
 def save_response(
-    student_id: str,
-    selected_bundle: str,
-) -> bool:
+    student_name: str,
+    rank_1: str,
+    rank_2: str,
+    rank_3: str,
+) -> None:
     """
-    Save one student response to Google Sheets.
+    Save one student's complete ranking to Google Sheets.
 
-    Returns:
-        True  -> response saved
-        False -> student ID already exists
+    Student names are not treated as unique identifiers, so two or
+    more students may submit using the same name.
     """
 
-    cleaned_id = student_id.strip()
+    cleaned_name = student_name.strip()
 
     with csv_lock():
-
-        responses = load_responses()
-
-        existing_ids = (
-            responses["student_id"]
-            .fillna("")
-            .astype(str)
-            .str.strip()
-            .str.casefold()
-        )
-
-        if (
-            cleaned_id.casefold()
-            in existing_ids.values
-        ):
-            return False
 
         worksheet = google_worksheet()
 
         worksheet.append_row(
             [
                 (
-                    datetime.now()
-                    .astimezone()
+                    datetime.now(IST)
                     .isoformat(
                         timespec="seconds"
                     )
                 ),
-                cleaned_id,
-                selected_bundle,
+                cleaned_name,
+                rank_1,
+                rank_2,
+                rank_3,
             ],
             value_input_option="RAW",
         )
-
-    return True
 
 
 # ============================================================
@@ -320,138 +312,284 @@ def reset_all_responses() -> None:
 # RESULTS SUMMARY
 # ============================================================
 
+RANK_COLUMNS = [
+    ("rank_1", "Rank 1"),
+    ("rank_2", "Rank 2"),
+    ("rank_3", "Rank 3"),
+]
+
+
+def valid_ranked_responses(
+    responses: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Keep only complete student rows with one valid, distinct bundle
+    in Rank 1, Rank 2, and Rank 3.
+    """
+
+    if responses.empty:
+        return responses.copy()
+
+    valid = responses.copy()
+
+    valid["student_name"] = (
+        valid["student_name"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+
+    rank_columns = [
+        column
+        for column, _ in RANK_COLUMNS
+    ]
+
+    for column in rank_columns:
+        valid[column] = (
+            valid[column]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+        )
+
+    valid_bundle_names = set(BUNDLES.keys())
+
+    valid_mask = (
+        valid["student_name"].ne("")
+    )
+
+    for column in rank_columns:
+        valid_mask &= valid[column].isin(
+            valid_bundle_names
+        )
+
+    valid_mask &= (
+        valid[rank_columns]
+        .nunique(axis=1)
+        .eq(len(rank_columns))
+    )
+
+    return (
+        valid.loc[valid_mask]
+        .copy()
+        .reset_index(drop=True)
+    )
+
+
 def results_summary(
     responses: pd.DataFrame,
 ) -> pd.DataFrame:
     """
-    Calculate number and percentage of students
-    choosing each bundle.
+    Calculate the number and percentage of valid students assigning
+    each bundle to Rank 1, Rank 2, and Rank 3.
+
+    For every rank, the bundle percentages add up to 100% whenever
+    at least one valid response exists.
     """
 
-    counts = (
-        responses["selected_bundle"]
-        .value_counts()
-        .reindex(
-            BUNDLES.keys(),
-            fill_value=0,
-        )
-        .astype(int)
+    valid = valid_ranked_responses(
+        responses
     )
 
-    total = int(
-        counts.sum()
-    )
+    total_students = len(valid)
+    rows = []
 
-    if total:
+    for rank_column, rank_label in RANK_COLUMNS:
 
-        percentages = (
-            counts / total * 100
+        counts = (
+            valid[rank_column]
+            .value_counts()
+            .reindex(
+                BUNDLES.keys(),
+                fill_value=0,
+            )
+            .astype(int)
         )
 
-    else:
+        for bundle in BUNDLES.keys():
 
-        percentages = (
-            counts.astype(float)
-        )
+            students = int(
+                counts.loc[bundle]
+            )
 
-    return pd.DataFrame(
-        {
-            "Bundle": list(
-                BUNDLES.keys()
-            ),
-            "Students": counts.values,
-            "Percentage": (
-                percentages
-                .round(1)
-                .values
-            ),
+            if total_students:
+                percentage = (
+                    students
+                    / total_students
+                    * 100
+                )
+            else:
+                percentage = 0.0
+
+            rows.append(
+                {
+                    "Rank": rank_label,
+                    "Bundle": bundle,
+                    "Students": students,
+                    "Percentage": round(
+                        percentage,
+                        1,
+                    ),
+                }
+            )
+
+    return pd.DataFrame(rows)
+
+
+def detailed_results_summary(
+    summary: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Build an easy-to-read professor table.
+
+    Each row is one rank and each bundle column shows both the
+    number of students and the percentage for that rank. The final
+    column identifies the bundle or bundles with the highest share.
+    """
+
+    rows = []
+
+    for _, rank_label in RANK_COLUMNS:
+
+        row = {
+            "Rank": rank_label,
         }
-    )
+
+        rank_data = summary[
+            summary["Rank"] == rank_label
+        ].copy()
+
+        for bundle in BUNDLES.keys():
+
+            match = rank_data[
+                rank_data["Bundle"] == bundle
+            ]
+
+            if match.empty:
+                students = 0
+                percentage = 0.0
+            else:
+                students = int(
+                    match.iloc[0]["Students"]
+                )
+                percentage = float(
+                    match.iloc[0]["Percentage"]
+                )
+
+            row[bundle] = (
+                f"{students} students ({percentage:.1f}%)"
+            )
+
+        if rank_data.empty:
+            highest_text = "—"
+        else:
+            highest_percentage = float(
+                rank_data["Percentage"].max()
+            )
+
+            winners = (
+                rank_data.loc[
+                    rank_data["Percentage"].eq(
+                        highest_percentage
+                    ),
+                    "Bundle",
+                ]
+                .astype(str)
+                .tolist()
+            )
+
+            highest_text = (
+                f"{' & '.join(winners)} — "
+                f"{highest_percentage:.1f}%"
+            )
+
+        row["Highest bundle"] = highest_text
+        rows.append(row)
+
+    return pd.DataFrame(rows)
 
 
 # ============================================================
-# CONVEX GRAPH
+# SINGLE CONTINUOUS HIGHEST-SHARE GRAPH
 # ============================================================
 
-def convex_bundle_graph(
+def continuous_rank_graph(
     summary: pd.DataFrame,
 ) -> alt.Chart:
     """
-    Create a clean convex-style preference graph.
+    Create one smooth continuous line across Rank 1, Rank 2, Rank 3.
 
-    The horizontal order is:
-        Bundle Y -> Bundle Z -> Bundle X
-
-    This keeps Bundle Z visually between the two extreme bundles.
-    The vertical position of each point is determined by the actual
-    percentage of students who selected that bundle.
-
-    Every point uses the same circle size. Percentage is represented
-    only by the point's vertical position, not by bubble size.
+    For each rank, the plotted point is the highest percentage among
+    Bundle X, Bundle Y, and Bundle Z. If multiple bundles tie for the
+    highest percentage, all tied bundle names are shown on the point.
     """
 
-    graph_data = summary.copy()
-
-    graph_data["Students"] = (
-        graph_data["Students"]
-        .fillna(0)
-        .astype(int)
-    )
-
-    graph_data["Percentage"] = (
-        graph_data["Percentage"]
-        .fillna(0)
-        .astype(float)
-    )
-
-    # Keep Z visually between the two extreme bundles.
-    bundle_order = [
-        "Bundle Y",
-        "Bundle Z",
-        "Bundle X",
+    rank_order = [
+        "Rank 1",
+        "Rank 2",
+        "Rank 3",
     ]
 
-    graph_data["Bundle"] = pd.Categorical(
-        graph_data["Bundle"],
-        categories=bundle_order,
+    rows = []
+
+    for rank_label in rank_order:
+
+        rank_data = summary[
+            summary["Rank"] == rank_label
+        ].copy()
+
+        if rank_data.empty:
+            highest_percentage = 0.0
+            winners = []
+        else:
+            highest_percentage = float(
+                rank_data["Percentage"].max()
+            )
+
+            winners = (
+                rank_data.loc[
+                    rank_data["Percentage"].eq(
+                        highest_percentage
+                    ),
+                    "Bundle",
+                ]
+                .astype(str)
+                .tolist()
+            )
+
+        winner_text = (
+            " & ".join(winners)
+            if winners
+            else "No data"
+        )
+
+        rows.append(
+            {
+                "Rank": rank_label,
+                "Percentage": highest_percentage,
+                "Winning Bundle": winner_text,
+                "PointLabel": (
+                    f"{winner_text}  •  "
+                    f"{highest_percentage:.1f}%"
+                ),
+            }
+        )
+
+    graph_data = pd.DataFrame(rows)
+
+    graph_data["Rank"] = pd.Categorical(
+        graph_data["Rank"],
+        categories=rank_order,
         ordered=True,
     )
 
-    graph_data = (
-        graph_data
-        .sort_values("Bundle")
-        .reset_index(drop=True)
-    )
-
-    graph_data["Order"] = range(len(graph_data))
-
-    graph_data["PercentageText"] = (
-        graph_data["Percentage"]
-        .map(lambda value: f"{value:.1f}%")
-    )
-
-    graph_data["PointLabel"] = (
-        graph_data["Bundle"].astype(str)
-        + "  •  "
-        + graph_data["PercentageText"]
-    )
-
-    # --------------------------------------------------------
-    # VERY LIGHT AREA UNDER THE PREFERENCE LINE
-    # --------------------------------------------------------
-
-    area = (
+    base = (
         alt.Chart(graph_data)
-        .mark_area(
-            color="#dfe8f3",
-            opacity=0.28,
-            interpolate="monotone",
-        )
         .encode(
             x=alt.X(
-                "Bundle:N",
+                "Rank:N",
                 title=None,
-                sort=bundle_order,
+                sort=rank_order,
                 axis=alt.Axis(
                     labelAngle=0,
                     labelFontSize=14,
@@ -463,13 +601,20 @@ def convex_bundle_graph(
             ),
             y=alt.Y(
                 "Percentage:Q",
-                title="Percentage of students",
+                title="Highest percentage of students",
                 scale=alt.Scale(
-                    domain=[0, 100],
+                    domain=[0, 105],
                     nice=False,
                 ),
                 axis=alt.Axis(
-                    values=[0, 20, 40, 60, 80, 100],
+                    values=[
+                        0,
+                        20,
+                        40,
+                        60,
+                        80,
+                        100,
+                    ],
                     labelExpr="datum.value + '%'",
                     grid=True,
                     gridColor="#f3e7df",
@@ -479,123 +624,69 @@ def convex_bundle_graph(
                     labelPadding=8,
                 ),
             ),
-        )
-    )
-
-    # --------------------------------------------------------
-    # CONNECTING LINE
-    # --------------------------------------------------------
-
-    line = (
-        alt.Chart(graph_data)
-        .mark_line(
-            color="#18264a",
-            strokeWidth=4,
-            interpolate="monotone",
-        )
-        .encode(
-            x=alt.X(
-                "Bundle:N",
-                sort=bundle_order,
-            ),
-            y=alt.Y(
-                "Percentage:Q",
-                scale=alt.Scale(
-                    domain=[0, 100],
-                    nice=False,
-                ),
-            ),
-            order=alt.Order(
-                "Order:Q",
-            ),
-        )
-    )
-
-    # --------------------------------------------------------
-    # SAME-SIZED LIGHT COLORED CIRCLES
-    # --------------------------------------------------------
-
-    points = (
-        alt.Chart(graph_data)
-        .mark_circle(
-            size=650,
-            stroke="#f58220",
-            strokeWidth=2,
-            opacity=0.95,
-        )
-        .encode(
-            x=alt.X(
-                "Bundle:N",
-                sort=bundle_order,
-            ),
-            y=alt.Y(
-                "Percentage:Q",
-                scale=alt.Scale(
-                    domain=[0, 100],
-                    nice=False,
-                ),
-            ),
-            color=alt.value("#ffd2ad"),
             tooltip=[
                 alt.Tooltip(
-                    "Bundle:N",
-                    title="Bundle",
+                    "Rank:N",
+                    title="Rank",
                 ),
                 alt.Tooltip(
-                    "Students:Q",
-                    title="Students",
+                    "Winning Bundle:N",
+                    title="Highest bundle",
                 ),
                 alt.Tooltip(
                     "Percentage:Q",
-                    title="Selected",
+                    title="Highest share",
                     format=".1f",
                 ),
             ],
         )
     )
 
-    # --------------------------------------------------------
-    # PERCENTAGE LABELS ABOVE THE CIRCLES
-    # --------------------------------------------------------
+    smooth_line = (
+        base
+        .mark_line(
+            interpolate="monotone",
+            strokeWidth=4,
+            color="#18264a",
+        )
+    )
+
+    points = (
+        base
+        .mark_circle(
+            size=260,
+            color="#f58220",
+            stroke="#ffffff",
+            strokeWidth=2,
+            opacity=1,
+        )
+    )
 
     labels = (
-        alt.Chart(graph_data)
+        base
         .mark_text(
-            dy=-28,
-            fontSize=15,
+            dy=-22,
+            fontSize=13,
             fontWeight="bold",
-            color="#d9232e",
+            color="#18264a",
         )
         .encode(
-            x=alt.X(
-                "Bundle:N",
-                sort=bundle_order,
-            ),
-            y=alt.Y(
-                "Percentage:Q",
-                scale=alt.Scale(
-                    domain=[0, 100],
-                    nice=False,
-                ),
-            ),
             text=alt.Text(
-                "PercentageText:N",
+                "PointLabel:N"
             ),
         )
     )
 
-    # --------------------------------------------------------
-    # FINAL CHART
-    # --------------------------------------------------------
-
     chart = (
-        area
-        + line
+        smooth_line
         + points
         + labels
     ).properties(
         height=500,
-        title="Convex Preference Pattern by Class Share",
+        title=(
+            "Highest Bundle Share Across "
+            "Rank 1, Rank 2, and Rank 3"
+        ),
     ).configure_title(
         fontSize=21,
         fontWeight=600,
@@ -764,7 +855,7 @@ st.markdown(
 
 
         /* ----------------------------------------
-           STUDENT ID / PASSWORD INPUTS
+           STUDENT NAME / PASSWORD INPUTS
         ---------------------------------------- */
 
         div[data-testid="stTextInput"] {
@@ -1114,10 +1205,6 @@ st.title(
     "Convex Preferences"
 )
 
-st.write(
-    "Select the **one bundle you prefer most**."
-)
-
 
 # ============================================================
 # TABS
@@ -1135,99 +1222,309 @@ response_tab, results_tab = st.tabs(
 # STUDENT SUBMISSION TAB
 # ============================================================
 
+def confirm_student_name() -> None:
+    """
+    Lock the typed student name when the text input is submitted
+    with Enter. Blank names are not accepted.
+    """
+
+    entered_name = str(
+        st.session_state.get(
+            "student_name_input",
+            "",
+        )
+    ).strip()
+
+    if entered_name:
+        st.session_state[
+            "confirmed_student_name"
+        ] = entered_name
+        st.session_state[
+            "student_name_error"
+        ] = False
+    else:
+        st.session_state[
+            "student_name_error"
+        ] = True
+
+
 with response_tab:
 
-    with st.form(
-        "preference_form",
-        clear_on_submit=True,
+    # Clear the completed response only on the rerun after saving.
+    if st.session_state.pop(
+        "clear_preference_after_save",
+        False,
     ):
+        for key in [
+            "student_name_input",
+            "confirmed_student_name",
+            "student_name_error",
+            "rank_1_choice",
+            "rank_2_choice",
+            "locked_rank_1",
+            "locked_rank_2",
+        ]:
+            st.session_state.pop(
+                key,
+                None,
+            )
 
-        student_id = st.text_input(
-            "Student ID",
-            placeholder=(
-                "Enter your student ID"
-            ),
-            help=(
-                "The ID is used to prevent "
-                "duplicate submissions."
-            ),
+    if st.session_state.pop(
+        "preference_saved_message",
+        False,
+    ):
+        st.success(
+            "Your complete bundle ranking has been recorded."
         )
 
-        selected_bundle = st.radio(
-            "Choose your preferred bundle",
-            options=list(
-                BUNDLES.keys()
+    confirmed_student_name = (
+        st.session_state.get(
+            "confirmed_student_name"
+        )
+    )
+
+    # --------------------------------------------------------
+    # STUDENT NAME
+    #
+    # Until a non-blank name is entered and submitted with Enter,
+    # no ranking controls are shown.
+    # --------------------------------------------------------
+
+    if not confirmed_student_name:
+
+        st.text_input(
+            "Student Name",
+            placeholder=(
+                "Enter your name and press Enter"
             ),
-            index=None,
-            format_func=lambda bundle: (
+            key="student_name_input",
+            on_change=confirm_student_name,
+        )
+
+        if st.session_state.get(
+            "student_name_error",
+            False,
+        ):
+            st.error(
+                "Please enter your name."
+            )
+
+    else:
+
+        student_name = str(
+            confirmed_student_name
+        ).strip()
+
+        st.success(
+            f"**Student Name:** {student_name}"
+        )
+
+        st.write(
+            "Rank the bundles below from **1 to 3**, "
+            "with **1 as your highest rank**."
+        )
+
+        bundle_keys = list(
+            BUNDLES.keys()
+        )
+
+        def format_bundle(
+            bundle: str,
+        ) -> str:
+            return (
                 f"{bundle}  —  "
                 f"{BUNDLES[bundle]}"
-            ),
-        )
+            )
 
-        submit_left, submit_center, submit_right = (
-            st.columns(
-                [
-                    2,
-                    1,
-                    2,
-                ]
+        locked_rank_1 = (
+            st.session_state.get(
+                "locked_rank_1"
             )
         )
 
-        with submit_center:
+        locked_rank_2 = (
+            st.session_state.get(
+                "locked_rank_2"
+            )
+        )
 
-            submitted = (
-                st.form_submit_button(
-                    "Submit preference",
-                    type="primary",
-                    use_container_width=True,
+        rank_3 = None
+
+        # ----------------------------------------------------
+        # RANK 1
+        #
+        # The student may change the radio selection until the
+        # Submit Rank 1 Preference button is clicked. After that,
+        # Rank 1 is locked and the radio is no longer shown.
+        # ----------------------------------------------------
+
+        if locked_rank_1 is None:
+
+            rank_1_choice = st.radio(
+                (
+                    "Rank 1 — Which bundle is "
+                    "your highest preference?"
+                ),
+                options=bundle_keys,
+                index=None,
+                format_func=format_bundle,
+                key="rank_1_choice",
+            )
+
+            if rank_1_choice is not None:
+
+                st.info(
+                    "Selected for Rank 1: "
+                    f"**{rank_1_choice}**  —  "
+                    f"{BUNDLES[rank_1_choice]}"
                 )
-            )
 
+                confirm_rank_1 = st.button(
+                    "Submit Rank 1 Preference",
+                    type="primary",
+                    use_container_width=False,
+                )
 
-    # --------------------------------------------------------
-    # PROCESS STUDENT RESPONSE
-    # --------------------------------------------------------
+                if confirm_rank_1:
 
-    if submitted:
+                    st.session_state[
+                        "locked_rank_1"
+                    ] = rank_1_choice
 
-        if not student_id.strip():
-
-            st.error(
-                "Please enter your student ID."
-            )
-
-        elif selected_bundle is None:
-
-            st.error(
-                "Please select one bundle "
-                "before submitting."
-            )
-
-        elif save_response(
-            student_id,
-            selected_bundle,
-        ):
-
-            st.success(
-                f"Your preference for "
-                f"{selected_bundle} "
-                f"has been recorded."
-            )
+                    st.rerun()
 
         else:
 
-            st.warning(
-                "This student ID has already "
-                "submitted a response."
+            rank_1 = str(
+                locked_rank_1
             )
 
+            st.success(
+                "**Rank 1 locked:** "
+                f"{rank_1}  —  "
+                f"{BUNDLES[rank_1]}"
+            )
 
-    st.caption(
-        "Select one option. "
-        "Each Student ID can submit once."
-    )
+            remaining_for_rank_2 = [
+                bundle
+                for bundle in bundle_keys
+                if bundle != rank_1
+            ]
+
+            # ------------------------------------------------
+            # RANK 2
+            #
+            # Rank 2 behaves the same way: the student can change
+            # the radio choice until Submit Rank 2 Preference is
+            # clicked. Once confirmed, it is permanently locked.
+            # ------------------------------------------------
+
+            if locked_rank_2 is None:
+
+                rank_2_choice = st.radio(
+                    (
+                        "Rank 2 — What is your "
+                        "second preference?"
+                    ),
+                    options=remaining_for_rank_2,
+                    index=None,
+                    format_func=format_bundle,
+                    key="rank_2_choice",
+                )
+
+                if rank_2_choice is not None:
+
+                    st.info(
+                        "Selected for Rank 2: "
+                        f"**{rank_2_choice}**  —  "
+                        f"{BUNDLES[rank_2_choice]}"
+                    )
+
+                    confirm_rank_2 = st.button(
+                        "Submit Rank 2 Preference",
+                        type="primary",
+                        use_container_width=False,
+                    )
+
+                    if confirm_rank_2:
+
+                        st.session_state[
+                            "locked_rank_2"
+                        ] = rank_2_choice
+
+                        st.rerun()
+
+            else:
+
+                rank_2 = str(
+                    locked_rank_2
+                )
+
+                st.success(
+                    "**Rank 2 locked:** "
+                    f"{rank_2}  —  "
+                    f"{BUNDLES[rank_2]}"
+                )
+
+                # --------------------------------------------
+                # RANK 3 — automatically the only bundle left.
+                # --------------------------------------------
+
+                rank_3 = next(
+                    bundle
+                    for bundle in bundle_keys
+                    if bundle not in {
+                        rank_1,
+                        rank_2,
+                    }
+                )
+
+                st.info(
+                    "**Rank 3 automatically assigned:** "
+                    f"{rank_3}  —  "
+                    f"{BUNDLES[rank_3]}"
+                )
+
+                # --------------------------------------------
+                # SUBMIT COMPLETE RANKING
+                # --------------------------------------------
+
+                submit_left, submit_center, submit_right = (
+                    st.columns(
+                        [
+                            2,
+                            1,
+                            2,
+                        ]
+                    )
+                )
+
+                with submit_center:
+
+                    submitted = st.button(
+                        "Submit Preference",
+                        type="primary",
+                        use_container_width=True,
+                    )
+
+                if submitted:
+
+                    save_response(
+                        student_name,
+                        rank_1,
+                        rank_2,
+                        rank_3,
+                    )
+
+                    st.session_state[
+                        "clear_preference_after_save"
+                    ] = True
+
+                    st.session_state[
+                        "preference_saved_message"
+                    ] = True
+
+                    st.rerun()
 
 
 # ============================================================
@@ -1389,14 +1686,18 @@ with results_tab:
             )
 
 
-        summary = results_summary(
-            responses
+        valid_responses = (
+            valid_ranked_responses(
+                responses
+            )
         )
 
-        total_students = int(
-            summary[
-                "Students"
-            ].sum()
+        summary = results_summary(
+            valid_responses
+        )
+
+        total_students = len(
+            valid_responses
         )
 
 
@@ -1409,8 +1710,14 @@ with results_tab:
         )
 
         st.metric(
-            "Total responses",
+            "Total valid responses",
             total_students,
+        )
+
+        st.caption(
+            "The table and graph below use complete valid rankings. "
+            "Rank 1, Rank 2, and Rank 3 are each calculated separately "
+            "as percentages of all valid student responses."
         )
 
 
@@ -1421,7 +1728,7 @@ with results_tab:
         if total_students == 0:
 
             st.info(
-                "No student responses "
+                "No valid student responses "
                 "have been submitted yet."
             )
 
@@ -1439,22 +1746,18 @@ with results_tab:
             st.divider()
 
             st.subheader(
-                "Detailed Results"
+                "Rank Distribution"
+            )
+
+            st.caption(
+                "Read each row from left to right. Each bundle cell shows "
+                "student count and percentage for that rank. The final "
+                "column shows the highest-share bundle for that rank."
             )
 
             display_summary = (
-                summary.copy()
-            )
-
-            display_summary[
-                "Percentage"
-            ] = (
-                display_summary[
-                    "Percentage"
-                ]
-                .map(
-                    lambda value:
-                    f"{value:.1f}%"
+                detailed_results_summary(
+                    summary
                 )
             )
 
@@ -1507,6 +1810,13 @@ with results_tab:
                 "table.detailed-results-table tbody tr:hover td {"
                 "background:#fff1e6;"
                 "}"
+                "table.detailed-results-table td:first-child {"
+                "font-weight:700;"
+                "}"
+                "table.detailed-results-table td:last-child {"
+                "font-weight:700;"
+                "color:#d9232e;"
+                "}"
                 "table.detailed-results-table tr:last-child td {"
                 "border-bottom:none;"
                 "}"
@@ -1520,130 +1830,24 @@ with results_tab:
 
 
             # =================================================
-            # PERCENTAGE CHOOSING EACH BUNDLE
+            # CONTINUOUS RANK 1 -> RANK 2 -> RANK 3 GRAPH
             # =================================================
 
             st.divider()
 
             st.subheader(
-                "Percentage Choosing Each Bundle"
-            )
-
-            percentage_data = summary.copy()
-            percentage_data["PercentageText"] = (
-                percentage_data["Percentage"]
-                .map(lambda value: f"{value:.1f}%")
-            )
-
-            percentage_base = (
-                alt.Chart(percentage_data)
-                .encode(
-                    x=alt.X(
-                        "Bundle:N",
-                        title=None,
-                        sort=[
-                            "Bundle X",
-                            "Bundle Y",
-                            "Bundle Z",
-                        ],
-                        axis=alt.Axis(
-                            labelAngle=0,
-                            labelFontSize=13,
-                        ),
-                    ),
-                    y=alt.Y(
-                        "Percentage:Q",
-                        title="Percentage",
-                        scale=alt.Scale(
-                            domain=[0, 100],
-                            nice=False,
-                        ),
-                        axis=alt.Axis(
-                            values=[0, 20, 40, 60, 80, 100],
-                            labelExpr="datum.value + '%'",
-                            gridColor="#f3e7df",
-                        ),
-                    ),
-                    tooltip=[
-                        alt.Tooltip(
-                            "Bundle:N",
-                            title="Bundle",
-                        ),
-                        alt.Tooltip(
-                            "Students:Q",
-                            title="Students",
-                        ),
-                        alt.Tooltip(
-                            "Percentage:Q",
-                            title="Percentage",
-                            format=".1f",
-                        ),
-                    ],
-                )
-            )
-
-            percentage_bars = (
-                percentage_base
-                .mark_bar(
-                    cornerRadiusTopLeft=8,
-                    cornerRadiusTopRight=8,
-                    color="#f58220",
-                )
-            )
-
-            percentage_labels = (
-                percentage_base
-                .mark_text(
-                    dy=-10,
-                    fontSize=13,
-                    fontWeight="bold",
-                    color="#18264a",
-                )
-                .encode(
-                    text="PercentageText:N",
-                )
-            )
-
-            percentage_chart = (
-                percentage_bars
-                + percentage_labels
-            ).properties(
-                height=380,
-            ).configure_axis(
-                labelColor="#18264a",
-                titleColor="#18264a",
-                titleFontSize=14,
-                labelFontSize=13,
-            ).configure_view(
-                stroke=None,
-            )
-
-            st.altair_chart(
-                percentage_chart,
-                use_container_width=True,
-            )
-
-
-            # =================================================
-            # CONVEX PREFERENCE GRAPH
-            # =================================================
-
-            st.divider()
-
-            st.subheader(
-                "Convex Preference Graph"
+                "Continuous Preference Graph"
             )
 
             st.write(
-                "The graph places **Bundle Z between Bundle Y and "
-                "Bundle X**, while the vertical position of each "
-                "circle is based on the **percentage of students** "
-                "who selected that bundle. All circles are the same "
-                "size."
+                "The graph has **one smooth continuous line**. For each "
+                "rank, the point shows the **highest percentage among "
+                "Bundle X, Bundle Y, and Bundle Z**. The bundle name is "
+                "shown beside the point; ties show all tied bundles."
             )
 
             st.altair_chart(
-                convex_bundle_graph(
+                continuous_rank_graph(
                     summary
                 ),
                 use_container_width=True,
