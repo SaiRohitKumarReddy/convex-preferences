@@ -1749,11 +1749,11 @@ with results_tab:
                 "Rank Distribution"
             )
 
-            st.caption(
-                "Read each row from left to right. Each bundle cell shows "
-                "student count and percentage for that rank. The final "
-                "column shows the highest-share bundle for that rank."
-            )
+            #st.caption(
+             #   "Read each row from left to right. Each bundle cell shows "
+              #  "student count and percentage for that rank. The final "
+               # "column shows the highest-share bundle for that rank."
+            #)
 
             display_summary = (
                 detailed_results_summary(
