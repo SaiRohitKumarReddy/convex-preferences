@@ -1714,11 +1714,11 @@ with results_tab:
             total_students,
         )
 
-        st.caption(
-            "The table and graph below use complete valid rankings. "
-            "Rank 1, Rank 2, and Rank 3 are each calculated separately "
-            "as percentages of all valid student responses."
-        )
+        #st.caption(
+         #   "The table and graph below use complete valid rankings. "
+          #  "Rank 1, Rank 2, and Rank 3 are each calculated separately "
+           # "as percentages of all valid student responses."
+        #)
 
 
         # ----------------------------------------------------
