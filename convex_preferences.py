@@ -1836,14 +1836,12 @@ with results_tab:
             st.divider()
 
             st.subheader(
-                "Continuous Preference Graph"
+                "Convex Preference Graph"
             )
 
             st.write(
-                "The graph has **one smooth continuous line**. For each "
-                "rank, the point shows the **highest percentage among "
-                "Bundle X, Bundle Y, and Bundle Z**. The bundle name is "
-                "shown beside the point; ties show all tied bundles."
+                **highest percentage among "
+               "Bundle X, Bundle Y, and Bundle Z**.
             )
 
             st.altair_chart(
