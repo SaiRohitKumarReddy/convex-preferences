@@ -1709,10 +1709,10 @@ with results_tab:
             "Total Responses"
         )
 
-        st.metric(
-            "Total valid responses",
-            total_students,
-        )
+        #st.metric(
+         #   "Total valid responses",
+          #  total_students,
+        #)
 
         #st.caption(
          #   "The table and graph below use complete valid rankings. "
