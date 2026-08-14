@@ -1,0 +1,4 @@
+.streamlit/secrets.toml
+convex_preferences_responses.csv
+__pycache__/
+.idea/
