@@ -1839,10 +1839,10 @@ with results_tab:
                 "Convex Preference Graph"
             )
 
-            st.write(
-               " **The graph shows the highest percentage among "
-               "Bundle X, Bundle Y, and Bundle Z**."
-            )
+            #st.write(
+             #  " **The graph shows the highest percentage among "
+              # "Bundle X, Bundle Y, and Bundle Z**."
+            #)
 
             st.altair_chart(
                 continuous_rank_graph(
