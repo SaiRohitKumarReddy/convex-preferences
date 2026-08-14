@@ -1840,8 +1840,8 @@ with results_tab:
             )
 
             st.write(
-               " **highest percentage among "
-               "Bundle X, Bundle Y, and Bundle Z**".
+               " highest percentage among "
+               "Bundle X, Bundle Y, and Bundle Z".
             )
 
             st.altair_chart(
