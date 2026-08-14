@@ -1711,7 +1711,7 @@ with results_tab:
 
         #st.metric(
          #   "Total valid responses",
-          #  total_students,
+             total_students,
         #)
 
         #st.caption(
