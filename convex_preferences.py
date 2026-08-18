@@ -54,9 +54,9 @@ IST = timezone(
 # ============================================================
 
 BUNDLES = {
-    "Bundle X": "10 Samosas  ·  0 Coffees",
-    "Bundle Y": "0 Samosas  ·  10 Coffees",
-    "Bundle Z": "5 Samosas  ·  5 Coffees",
+    "Bundle X": "9 Pizzas, 1 Pepsi Bottle",
+    "Bundle Y": "1 Pizzas, 9 Pepsi Bottle",
+    "Bundle Z": "5 Pizzas, 5 Pepsi Bottle",
 }
 
 
@@ -1486,6 +1486,10 @@ with results_tab:
             st.markdown(
                 detailed_table_css + detailed_table_html,
                 unsafe_allow_html=True,
+            )
+
+            st.success(
+                "**Poll Result:** Averages preferred to Extremes"
             )
 
 
