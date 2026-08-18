@@ -5,7 +5,6 @@ import json
 import threading
 from datetime import datetime, timedelta, timezone
 
-import altair as alt
 import gspread
 import pandas as pd
 import streamlit as st
@@ -39,8 +38,6 @@ CSV_COLUMNS = [
     "submitted_at",
     "student_name",
     "rank_1",
-    "rank_2",
-    "rank_3",
 ]
 
 IST = timezone(
@@ -171,10 +168,14 @@ def csv_lock() -> threading.Lock:
 
 def initialize_worksheet() -> None:
     """
-    Make sure the worksheet has the expected header row.
+    Make sure the worksheet has the expected Rank-1-only header row.
 
     The active schema is:
-        submitted_at | student_name | rank_1 | rank_2 | rank_3
+        submitted_at | student_name | rank_1
+
+    If the worksheet still has the previous rank_2 and rank_3 columns,
+    clear those old columns while preserving submitted_at, student_name,
+    and rank_1 data already stored in columns A:C.
     """
 
     worksheet = google_worksheet()
@@ -186,13 +187,27 @@ def initialize_worksheet() -> None:
             CSV_COLUMNS,
             value_input_option="RAW",
         )
+        return
 
-    elif first_row != CSV_COLUMNS:
+    if first_row[:3] != CSV_COLUMNS:
         worksheet.update(
-            range_name="A1:E1",
+            range_name="A1:C1",
             values=[CSV_COLUMNS],
             value_input_option="RAW",
         )
+
+    old_rank_columns_present = (
+        len(first_row) >= 5
+        and first_row[3:5] == [
+            "rank_2",
+            "rank_3",
+        ]
+    )
+
+    if old_rank_columns_present:
+        worksheet.batch_clear([
+            "D:E",
+        ])
 
 
 # ============================================================
@@ -218,8 +233,6 @@ def load_responses() -> pd.DataFrame:
             columns=CSV_COLUMNS
         )
 
-    headers = values[0]
-
     rows = []
 
     for row in values[1:]:
@@ -232,18 +245,10 @@ def load_responses() -> pd.DataFrame:
             normalized_row
         )
 
-    responses = pd.DataFrame(
+    return pd.DataFrame(
         rows,
-        columns=headers,
+        columns=CSV_COLUMNS,
     )
-
-    # Make sure all required columns exist
-    for column in CSV_COLUMNS:
-
-        if column not in responses.columns:
-            responses[column] = ""
-
-    return responses[CSV_COLUMNS]
 
 
 # ============================================================
@@ -253,11 +258,9 @@ def load_responses() -> pd.DataFrame:
 def save_response(
     student_name: str,
     rank_1: str,
-    rank_2: str,
-    rank_3: str,
 ) -> None:
     """
-    Save one student's complete ranking to Google Sheets.
+    Save one student's Rank 1 preference to Google Sheets.
 
     Student names are not treated as unique identifiers, so two or
     more students may submit using the same name.
@@ -279,8 +282,6 @@ def save_response(
                 ),
                 cleaned_name,
                 rank_1,
-                rank_2,
-                rank_3,
             ],
             value_input_option="RAW",
         )
@@ -314,8 +315,6 @@ def reset_all_responses() -> None:
 
 RANK_COLUMNS = [
     ("rank_1", "Rank 1"),
-    ("rank_2", "Rank 2"),
-    ("rank_3", "Rank 3"),
 ]
 
 
@@ -323,8 +322,8 @@ def valid_ranked_responses(
     responses: pd.DataFrame,
 ) -> pd.DataFrame:
     """
-    Keep only complete student rows with one valid, distinct bundle
-    in Rank 1, Rank 2, and Rank 3.
+    Keep only rows with a non-blank student name and one valid
+    Rank 1 bundle preference.
     """
 
     if responses.empty:
@@ -380,11 +379,11 @@ def results_summary(
     responses: pd.DataFrame,
 ) -> pd.DataFrame:
     """
-    Calculate the number and percentage of valid students assigning
-    each bundle to Rank 1, Rank 2, and Rank 3.
+    Calculate the number and percentage of valid students selecting
+    each bundle as their Rank 1 preference.
 
-    For every rank, the bundle percentages add up to 100% whenever
-    at least one valid response exists.
+    The bundle percentages add up to 100% whenever at least one
+    valid response exists.
     """
 
     valid = valid_ranked_responses(
@@ -507,202 +506,6 @@ def detailed_results_summary(
         rows.append(row)
 
     return pd.DataFrame(rows)
-
-
-# ============================================================
-# SINGLE CONTINUOUS HIGHEST-SHARE GRAPH
-# ============================================================
-
-def continuous_rank_graph(
-    summary: pd.DataFrame,
-) -> alt.Chart:
-    """
-    Create one smooth continuous line across Rank 1, Rank 2, Rank 3.
-
-    For each rank, the plotted point is the highest percentage among
-    Bundle X, Bundle Y, and Bundle Z. If multiple bundles tie for the
-    highest percentage, all tied bundle names are shown on the point.
-    """
-
-    rank_order = [
-        "Rank 1",
-        "Rank 2",
-        "Rank 3",
-    ]
-
-    rows = []
-
-    for rank_label in rank_order:
-
-        rank_data = summary[
-            summary["Rank"] == rank_label
-        ].copy()
-
-        if rank_data.empty:
-            highest_percentage = 0.0
-            winners = []
-        else:
-            highest_percentage = float(
-                rank_data["Percentage"].max()
-            )
-
-            winners = (
-                rank_data.loc[
-                    rank_data["Percentage"].eq(
-                        highest_percentage
-                    ),
-                    "Bundle",
-                ]
-                .astype(str)
-                .tolist()
-            )
-
-        winner_text = (
-            " & ".join(winners)
-            if winners
-            else "No data"
-        )
-
-        rows.append(
-            {
-                "Rank": rank_label,
-                "Percentage": highest_percentage,
-                "Winning Bundle": winner_text,
-                "PointLabel": (
-                    f"{winner_text}  •  "
-                    f"{highest_percentage:.1f}%"
-                ),
-            }
-        )
-
-    graph_data = pd.DataFrame(rows)
-
-    graph_data["Rank"] = pd.Categorical(
-        graph_data["Rank"],
-        categories=rank_order,
-        ordered=True,
-    )
-
-    base = (
-        alt.Chart(graph_data)
-        .encode(
-            x=alt.X(
-                "Rank:N",
-                title=None,
-                sort=rank_order,
-                axis=alt.Axis(
-                    labelAngle=0,
-                    labelFontSize=14,
-                    labelFontWeight=600,
-                    labelPadding=12,
-                    domain=False,
-                    ticks=False,
-                ),
-            ),
-            y=alt.Y(
-                "Percentage:Q",
-                title="Highest percentage of students",
-                scale=alt.Scale(
-                    domain=[0, 105],
-                    nice=False,
-                ),
-                axis=alt.Axis(
-                    values=[
-                        0,
-                        20,
-                        40,
-                        60,
-                        80,
-                        100,
-                    ],
-                    labelExpr="datum.value + '%'",
-                    grid=True,
-                    gridColor="#f3e7df",
-                    gridOpacity=1,
-                    domain=False,
-                    ticks=False,
-                    labelPadding=8,
-                ),
-            ),
-            tooltip=[
-                alt.Tooltip(
-                    "Rank:N",
-                    title="Rank",
-                ),
-                alt.Tooltip(
-                    "Winning Bundle:N",
-                    title="Highest bundle",
-                ),
-                alt.Tooltip(
-                    "Percentage:Q",
-                    title="Highest share",
-                    format=".1f",
-                ),
-            ],
-        )
-    )
-
-    smooth_line = (
-        base
-        .mark_line(
-            interpolate="monotone",
-            strokeWidth=4,
-            color="#18264a",
-        )
-    )
-
-    points = (
-        base
-        .mark_circle(
-            size=260,
-            color="#f58220",
-            stroke="#ffffff",
-            strokeWidth=2,
-            opacity=1,
-        )
-    )
-
-    labels = (
-        base
-        .mark_text(
-            dy=-22,
-            fontSize=13,
-            fontWeight="bold",
-            color="#18264a",
-        )
-        .encode(
-            text=alt.Text(
-                "PointLabel:N"
-            ),
-        )
-    )
-
-    chart = (
-        smooth_line
-        + points
-        + labels
-    ).properties(
-        height=500,
-        title=(
-            "Highest Bundle Share Across "
-            "Rank 1, Rank 2, and Rank 3"
-        ),
-    ).configure_title(
-        fontSize=21,
-        fontWeight=600,
-        anchor="middle",
-        color="#18264a",
-        offset=18,
-    ).configure_axis(
-        labelColor="#18264a",
-        titleColor="#18264a",
-        titleFontSize=14,
-        titlePadding=14,
-    ).configure_view(
-        stroke=None,
-    )
-
-    return chart
 
 
 # ============================================================
@@ -1260,9 +1063,6 @@ with response_tab:
             "confirmed_student_name",
             "student_name_error",
             "rank_1_choice",
-            "rank_2_choice",
-            "locked_rank_1",
-            "locked_rank_2",
         ]:
             st.session_state.pop(
                 key,
@@ -1274,7 +1074,7 @@ with response_tab:
         False,
     ):
         st.success(
-            "Your complete bundle ranking has been recorded."
+            "Your Rank 1 bundle preference has been recorded."
         )
 
     confirmed_student_name = (
@@ -1287,7 +1087,7 @@ with response_tab:
     # STUDENT NAME
     #
     # Until a non-blank name is entered and submitted with Enter,
-    # no ranking controls are shown.
+    # the Rank 1 preference control is not shown.
     # --------------------------------------------------------
 
     if not confirmed_student_name:
@@ -1320,8 +1120,8 @@ with response_tab:
         )
 
         st.write(
-            "Rank the bundles below from **1 to 3**, "
-            "with **1 as your highest rank**."
+            "Select the bundle that is your "
+            "**highest preference (Rank 1)**."
         )
 
         bundle_keys = list(
@@ -1336,195 +1136,59 @@ with response_tab:
                 f"{BUNDLES[bundle]}"
             )
 
-        locked_rank_1 = (
-            st.session_state.get(
-                "locked_rank_1"
-            )
+        rank_1_choice = st.radio(
+            (
+                "Rank 1 — Which bundle is "
+                "your highest preference?"
+            ),
+            options=bundle_keys,
+            index=None,
+            format_func=format_bundle,
+            key="rank_1_choice",
         )
 
-        locked_rank_2 = (
-            st.session_state.get(
-                "locked_rank_2"
-            )
-        )
+        if rank_1_choice is not None:
 
-        rank_3 = None
-
-        # ----------------------------------------------------
-        # RANK 1
-        #
-        # The student may change the radio selection until the
-        # Submit Rank 1 Preference button is clicked. After that,
-        # Rank 1 is locked and the radio is no longer shown.
-        # ----------------------------------------------------
-
-        if locked_rank_1 is None:
-
-            rank_1_choice = st.radio(
-                (
-                    "Rank 1 — Which bundle is "
-                    "your highest preference?"
-                ),
-                options=bundle_keys,
-                index=None,
-                format_func=format_bundle,
-                key="rank_1_choice",
+            st.info(
+                "Selected for Rank 1: "
+                f"**{rank_1_choice}**  —  "
+                f"{BUNDLES[rank_1_choice]}"
             )
 
-            if rank_1_choice is not None:
-
-                st.info(
-                    "Selected for Rank 1: "
-                    f"**{rank_1_choice}**  —  "
-                    f"{BUNDLES[rank_1_choice]}"
+            submit_left, submit_center, submit_right = (
+                st.columns(
+                    [
+                        2,
+                        1,
+                        2,
+                    ]
                 )
+            )
 
-                confirm_rank_1 = st.button(
-                    "Submit Rank 1 Preference",
+            with submit_center:
+
+                submitted = st.button(
+                    "Submit Preference",
                     type="primary",
-                    use_container_width=False,
+                    use_container_width=True,
                 )
 
-                if confirm_rank_1:
+            if submitted:
 
-                    st.session_state[
-                        "locked_rank_1"
-                    ] = rank_1_choice
-
-                    st.rerun()
-
-        else:
-
-            rank_1 = str(
-                locked_rank_1
-            )
-
-            st.success(
-                "**Rank 1 locked:** "
-                f"{rank_1}  —  "
-                f"{BUNDLES[rank_1]}"
-            )
-
-            remaining_for_rank_2 = [
-                bundle
-                for bundle in bundle_keys
-                if bundle != rank_1
-            ]
-
-            # ------------------------------------------------
-            # RANK 2
-            #
-            # Rank 2 behaves the same way: the student can change
-            # the radio choice until Submit Rank 2 Preference is
-            # clicked. Once confirmed, it is permanently locked.
-            # ------------------------------------------------
-
-            if locked_rank_2 is None:
-
-                rank_2_choice = st.radio(
-                    (
-                        "Rank 2 — What is your "
-                        "second preference?"
-                    ),
-                    options=remaining_for_rank_2,
-                    index=None,
-                    format_func=format_bundle,
-                    key="rank_2_choice",
+                save_response(
+                    student_name,
+                    rank_1_choice,
                 )
 
-                if rank_2_choice is not None:
+                st.session_state[
+                    "clear_preference_after_save"
+                ] = True
 
-                    st.info(
-                        "Selected for Rank 2: "
-                        f"**{rank_2_choice}**  —  "
-                        f"{BUNDLES[rank_2_choice]}"
-                    )
+                st.session_state[
+                    "preference_saved_message"
+                ] = True
 
-                    confirm_rank_2 = st.button(
-                        "Submit Rank 2 Preference",
-                        type="primary",
-                        use_container_width=False,
-                    )
-
-                    if confirm_rank_2:
-
-                        st.session_state[
-                            "locked_rank_2"
-                        ] = rank_2_choice
-
-                        st.rerun()
-
-            else:
-
-                rank_2 = str(
-                    locked_rank_2
-                )
-
-                st.success(
-                    "**Rank 2 locked:** "
-                    f"{rank_2}  —  "
-                    f"{BUNDLES[rank_2]}"
-                )
-
-                # --------------------------------------------
-                # RANK 3 — automatically the only bundle left.
-                # --------------------------------------------
-
-                rank_3 = next(
-                    bundle
-                    for bundle in bundle_keys
-                    if bundle not in {
-                        rank_1,
-                        rank_2,
-                    }
-                )
-
-                st.info(
-                    "**Rank 3 automatically assigned:** "
-                    f"{rank_3}  —  "
-                    f"{BUNDLES[rank_3]}"
-                )
-
-                # --------------------------------------------
-                # SUBMIT COMPLETE RANKING
-                # --------------------------------------------
-
-                submit_left, submit_center, submit_right = (
-                    st.columns(
-                        [
-                            2,
-                            1,
-                            2,
-                        ]
-                    )
-                )
-
-                with submit_center:
-
-                    submitted = st.button(
-                        "Submit Preference",
-                        type="primary",
-                        use_container_width=True,
-                    )
-
-                if submitted:
-
-                    save_response(
-                        student_name,
-                        rank_1,
-                        rank_2,
-                        rank_3,
-                    )
-
-                    st.session_state[
-                        "clear_preference_after_save"
-                    ] = True
-
-                    st.session_state[
-                        "preference_saved_message"
-                    ] = True
-
-                    st.rerun()
+                st.rerun()
 
 
 # ============================================================
@@ -1714,11 +1378,7 @@ with results_tab:
               total_students,
         )
 
-        #st.caption(
-         #   "The table and graph below use complete valid rankings. "
-          #  "Rank 1, Rank 2, and Rank 3 are each calculated separately "
-           # "as percentages of all valid student responses."
-        #)
+        # The table below uses valid Rank 1 preferences only.
 
 
         # ----------------------------------------------------
@@ -1746,7 +1406,7 @@ with results_tab:
             st.divider()
 
             st.subheader(
-                "Rank Distribution"
+                "Rank 1 Distribution"
             )
 
             #st.caption(
@@ -1826,29 +1486,6 @@ with results_tab:
             st.markdown(
                 detailed_table_css + detailed_table_html,
                 unsafe_allow_html=True,
-            )
-
-
-            # =================================================
-            # CONTINUOUS RANK 1 -> RANK 2 -> RANK 3 GRAPH
-            # =================================================
-
-            st.divider()
-
-            st.subheader(
-                "Convex Preference Graph"
-            )
-
-            #st.write(
-             #  " **The graph shows the highest percentage among "
-              # "Bundle X, Bundle Y, and Bundle Z**."
-            #)
-
-            st.altair_chart(
-                continuous_rank_graph(
-                    summary
-                ),
-                use_container_width=True,
             )
 
 
