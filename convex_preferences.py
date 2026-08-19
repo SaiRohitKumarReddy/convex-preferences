@@ -881,6 +881,12 @@ st.markdown(
             font-weight: 600;
         }
 
+        .st-key-join_game_button button {
+            border-radius: 999px !important;
+            padding-left: 1.4rem !important;
+            padding-right: 1.4rem !important;
+        }
+
 
         /* ----------------------------------------
            DOWNLOAD BUTTON
@@ -1013,11 +1019,27 @@ st.title(
 # TABS
 # ============================================================
 
+def handle_main_tab_change() -> None:
+    """
+    Automatically lock professor results whenever the user
+    returns to the student submission tab.
+    """
+
+    if st.session_state.get(
+        "main_tabs"
+    ) == "Submit preference":
+        st.session_state[
+            "professor_authenticated"
+        ] = False
+
+
 response_tab, results_tab = st.tabs(
     [
         "Submit preference",
         "Professor Results",
-    ]
+    ],
+    key="main_tabs",
+    on_change=handle_main_tab_change,
 )
 
 
@@ -1099,6 +1121,13 @@ with response_tab:
             ),
             key="student_name_input",
             on_change=confirm_student_name,
+        )
+
+        st.button(
+            "Join the game",
+            key="join_game_button",
+            type="primary",
+            on_click=confirm_student_name,
         )
 
         if st.session_state.get(
