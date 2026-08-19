@@ -631,6 +631,47 @@ st.markdown(
 
 
         /* ----------------------------------------
+           STREAMLIT 1.47-COMPATIBLE TAB BUTTONS
+        ---------------------------------------- */
+
+        .st-key-student_tab_button button,
+        .st-key-results_tab_button button {
+            min-height: 42px !important;
+            padding: 0.45rem 1.15rem !important;
+            border: 1.5px solid var(--bitsom-orange) !important;
+            border-radius: 999px !important;
+            background: #ffffff !important;
+            color: var(--bitsom-navy) !important;
+            font-size: 1rem !important;
+            font-weight: 600 !important;
+        }
+
+        .st-key-student_tab_button button:hover,
+        .st-key-results_tab_button button:hover {
+            background: #fff8f2 !important;
+            border-color: var(--bitsom-orange) !important;
+            color: var(--bitsom-navy) !important;
+        }
+
+        .st-key-join_game_button button {
+            min-height: 44px !important;
+            padding: 0.45rem 1.25rem !important;
+            border-radius: 999px !important;
+            background: var(--bitsom-red) !important;
+            border-color: var(--bitsom-red) !important;
+            color: #ffffff !important;
+            font-size: 0.98rem !important;
+            font-weight: 600 !important;
+        }
+
+        .st-key-join_game_button button:hover {
+            background: var(--bitsom-navy) !important;
+            border-color: var(--bitsom-navy) !important;
+            color: #ffffff !important;
+        }
+
+
+        /* ----------------------------------------
            FORM
         ---------------------------------------- */
 
@@ -881,12 +922,6 @@ st.markdown(
             font-weight: 600;
         }
 
-        .st-key-join_game_button button {
-            border-radius: 999px !important;
-            padding-left: 1.4rem !important;
-            padding-right: 1.4rem !important;
-        }
-
 
         /* ----------------------------------------
            DOWNLOAD BUTTON
@@ -1019,28 +1054,92 @@ st.title(
 # TABS
 # ============================================================
 
-def handle_main_tab_change() -> None:
+if (
+    "main_view"
+    not in st.session_state
+):
+    st.session_state[
+        "main_view"
+    ] = "Submit preference"
+
+
+def show_student_tab() -> None:
     """
-    Automatically lock professor results whenever the user
-    returns to the student submission tab.
+    Show the student submission view and automatically
+    lock professor results.
     """
 
-    if st.session_state.get(
-        "main_tabs"
-    ) == "Submit preference":
-        st.session_state[
-            "professor_authenticated"
-        ] = False
+    st.session_state[
+        "main_view"
+    ] = "Submit preference"
+
+    st.session_state[
+        "professor_authenticated"
+    ] = False
 
 
-response_tab, results_tab = st.tabs(
-    [
-        "Submit preference",
-        "Professor Results",
-    ],
-    key="main_tabs",
-    on_change=handle_main_tab_change,
+def show_results_tab() -> None:
+    """Show the professor results view."""
+
+    st.session_state[
+        "main_view"
+    ] = "Professor Results"
+
+
+active_main_view = st.session_state[
+    "main_view"
+]
+
+active_tab_key = (
+    "student_tab_button"
+    if active_main_view == "Submit preference"
+    else "results_tab_button"
 )
+
+st.markdown(
+    f"""
+    <style>
+        .st-key-{active_tab_key} button {{
+            background: var(--bitsom-orange) !important;
+            border-color: var(--bitsom-orange) !important;
+            color: #ffffff !important;
+        }}
+
+        .st-key-{active_tab_key} button:hover {{
+            background: var(--bitsom-orange) !important;
+            border-color: var(--bitsom-orange) !important;
+            color: #ffffff !important;
+        }}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+student_tab_col, results_tab_col, tab_spacer = (
+    st.columns(
+        [
+            1.35,
+            1.35,
+            7.3,
+        ]
+    )
+)
+
+with student_tab_col:
+
+    st.button(
+        "Submit preference",
+        key="student_tab_button",
+        on_click=show_student_tab,
+    )
+
+with results_tab_col:
+
+    st.button(
+        "Professor Results",
+        key="results_tab_button",
+        on_click=show_results_tab,
+    )
 
 
 # ============================================================
@@ -1073,7 +1172,9 @@ def confirm_student_name() -> None:
         ] = True
 
 
-with response_tab:
+if st.session_state[
+    "main_view"
+] == "Submit preference":
 
     # Clear the completed response only on the rerun after saving.
     if st.session_state.pop(
@@ -1126,7 +1227,6 @@ with response_tab:
         st.button(
             "Join the game",
             key="join_game_button",
-            type="primary",
             on_click=confirm_student_name,
         )
 
@@ -1224,7 +1324,9 @@ with response_tab:
 # PROFESSOR RESULTS TAB
 # ============================================================
 
-with results_tab:
+if st.session_state[
+    "main_view"
+] == "Professor Results":
 
     # ========================================================
     # NOT LOGGED IN
