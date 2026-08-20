@@ -1118,9 +1118,9 @@ st.markdown(
 student_tab_col, results_tab_col, tab_spacer = (
     st.columns(
         [
-            1.35,
-            1.35,
-            7.3,
+            0.9,
+            0.95,
+            8.15,
         ]
     )
 )
@@ -1128,7 +1128,7 @@ student_tab_col, results_tab_col, tab_spacer = (
 with student_tab_col:
 
     st.button(
-        "Submit preference",
+        "Student Mode",
         key="student_tab_button",
         on_click=show_student_tab,
     )
@@ -1136,7 +1136,7 @@ with student_tab_col:
 with results_tab_col:
 
     st.button(
-        "Professor Results",
+        "Professor Mode",
         key="results_tab_button",
         on_click=show_results_tab,
     )
@@ -1176,6 +1176,22 @@ if st.session_state[
     "main_view"
 ] == "Submit preference":
 
+    if st.session_state.pop(
+        "preference_saved_message",
+        False,
+    ):
+        submitted_student_name = str(
+            st.session_state.get(
+                "confirmed_student_name",
+                "",
+            )
+        ).strip()
+
+        st.success(
+            f"Hello **{submitted_student_name}**, "
+            "thank you. We have submitted your response."
+        )
+
     # Clear the completed response only on the rerun after saving.
     if st.session_state.pop(
         "clear_preference_after_save",
@@ -1191,14 +1207,6 @@ if st.session_state[
                 key,
                 None,
             )
-
-    if st.session_state.pop(
-        "preference_saved_message",
-        False,
-    ):
-        st.success(
-            "Your Rank 1 bundle preference has been recorded."
-        )
 
     confirmed_student_name = (
         st.session_state.get(
