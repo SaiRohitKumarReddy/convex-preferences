@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+import html
 import json
 import threading
 from datetime import datetime, timedelta, timezone
@@ -636,14 +637,16 @@ st.markdown(
 
         .st-key-student_tab_button button,
         .st-key-results_tab_button button {
-            min-height: 42px !important;
-            padding: 0.45rem 1.15rem !important;
+            min-height: 36px !important;
+            height: 36px !important;
+            padding: 0.35rem 0.95rem !important;
             border: 1.5px solid var(--bitsom-orange) !important;
             border-radius: 999px !important;
             background: #ffffff !important;
             color: var(--bitsom-navy) !important;
-            font-size: 1rem !important;
+            font-size: 0.90rem !important;
             font-weight: 600 !important;
+            white-space: nowrap !important;
         }
 
         .st-key-student_tab_button button:hover,
@@ -924,6 +927,62 @@ st.markdown(
 
 
         /* ----------------------------------------
+           RESPONSE SUBMITTED CARD
+        ---------------------------------------- */
+
+        .submission-success-card {
+            width: 100%;
+            min-height: 230px;
+            margin-top: 1.25rem;
+            padding: 2rem 2.2rem;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            background: #ffffff;
+            border: 1px solid #d9dde7;
+            border-radius: 18px;
+            box-shadow: 0 6px 22px rgba(24, 38, 74, 0.06);
+        }
+
+        .submission-success-check {
+            width: 48px;
+            height: 48px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 0.85rem;
+            border-radius: 50%;
+            background: #fff8f2;
+            color: var(--bitsom-orange);
+            font-size: 1.55rem;
+            font-weight: 800;
+        }
+
+        .submission-success-title {
+            margin: 0;
+            color: var(--bitsom-navy);
+            font-size: 1.55rem;
+            line-height: 1.2;
+            font-weight: 750;
+        }
+
+        .submission-success-copy {
+            margin-top: 0.65rem;
+            color: #667085;
+            font-size: 1rem;
+            line-height: 1.6;
+        }
+
+        .submission-success-copy strong {
+            color: var(--bitsom-navy);
+            font-weight: 700;
+        }
+
+
+        /* ----------------------------------------
            DOWNLOAD BUTTON
         ---------------------------------------- */
 
@@ -1118,10 +1177,11 @@ st.markdown(
 student_tab_col, results_tab_col, tab_spacer = (
     st.columns(
         [
-            0.9,
-            0.95,
-            8.15,
-        ]
+            1.0,
+            1.0,
+            8.0,
+        ],
+        gap="small",
     )
 )
 
@@ -1131,6 +1191,7 @@ with student_tab_col:
         "Student Mode",
         key="student_tab_button",
         on_click=show_student_tab,
+        use_container_width=True,
     )
 
 with results_tab_col:
@@ -1139,6 +1200,7 @@ with results_tab_col:
         "Professor Mode",
         key="results_tab_button",
         on_click=show_results_tab,
+        use_container_width=True,
     )
 
 
@@ -1187,10 +1249,63 @@ if st.session_state[
             )
         ).strip()
 
-        st.success(
-            f"Hello **{submitted_student_name}**, "
-            "thank you. We have submitted your response."
+        submitted_rank_1 = str(
+            st.session_state.get(
+                "rank_1_choice",
+                "",
+            )
+        ).strip()
+
+        safe_student_name = html.escape(
+            submitted_student_name
         )
+        safe_rank_1 = html.escape(
+            submitted_rank_1
+        )
+        safe_bundle_description = html.escape(
+            BUNDLES.get(
+                submitted_rank_1,
+                "",
+            )
+        )
+
+        # Clear the completed response after capturing the values needed
+        # for the confirmation card.
+        st.session_state.pop(
+            "clear_preference_after_save",
+            None,
+        )
+
+        for key in [
+            "student_name_input",
+            "confirmed_student_name",
+            "student_name_error",
+            "rank_1_choice",
+        ]:
+            st.session_state.pop(
+                key,
+                None,
+            )
+
+        st.markdown(
+            f"""
+            <div class="submission-success-card">
+                <div class="submission-success-check">✓</div>
+                <div class="submission-success-title">
+                    Response submitted
+                </div>
+                <div class="submission-success-copy">
+                    Hello <strong>{safe_student_name}</strong>, thank you.<br>
+                    We have submitted your response successfully.<br>
+                    Selected response: <strong>{safe_rank_1}</strong>
+                    &nbsp;—&nbsp; {safe_bundle_description}
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        st.stop()
 
     # Clear the completed response only on the rerun after saving.
     if st.session_state.pop(
